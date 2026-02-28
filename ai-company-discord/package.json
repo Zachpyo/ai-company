@@ -1,9 +1,9 @@
 {
   "name": "ai-company-discord",
   "version": "1.0.0",
-  "description": "Minimal Discord bot that simulates an AI company",
-  "main": "index.js",
+  "description": "Minimal Discord AI company bot using Silra API",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
