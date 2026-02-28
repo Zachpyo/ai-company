@@ -1,0 +1,15 @@
+{
+  "name": "ai-company-discord",
+  "version": "1.0.0",
+  "description": "Minimal Discord bot that simulates an AI company",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.21.0",
+    "dotenv": "^16.6.1",
+    "openai": "^5.20.0"
+  }
+}
