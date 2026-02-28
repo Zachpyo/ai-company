@@ -3,6 +3,8 @@ import { Client, GatewayIntentBits } from 'discord.js';
 import OpenAI from 'openai';
 
 const { DISCORD_TOKEN, SILRA_API_KEY } = process.env;
+const SILRA_BASE_URL = process.env.SILRA_BASE_URL || 'https://api.silra.cn/v1';
+const MODEL = process.env.SILRA_MODEL?.trim();
 
 if (!DISCORD_TOKEN) {
   console.error('Missing DISCORD_TOKEN in environment variables.');
@@ -22,12 +24,19 @@ const client = new Client({
   ]
 });
 
+function normalizeSilraBaseURL(url) {
+  const trimmed = String(url || '').trim().replace(/\/+$/, '');
+  if (!trimmed) return 'https://api.silra.cn/v1';
+  return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
+}
+
+const normalizedSilraBaseURL = normalizeSilraBaseURL(SILRA_BASE_URL);
+
 const openai = new OpenAI({
-  apiKey: process.env.SILRA_API_KEY,
-  baseURL: 'https://api.silra.cn/v1'
+  apiKey: SILRA_API_KEY,
+  baseURL: normalizedSilraBaseURL
 });
 
-const MODEL = 'gpt-4o-mini';
 const MAX_MESSAGE_LENGTH = 2000;
 
 const CHANNELS = {
@@ -50,13 +59,26 @@ Give budget implications, forecast assumptions, unit economics, and ROI-focused 
 };
 
 async function askAI(systemPrompt, userInput) {
-  const completion = await openai.chat.completions.create({
-    model: MODEL,
+  const payload = {
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userInput }
     ]
-  });
+  };
+
+  // Some third-party OpenAI-compatible gateways use account-level default model.
+  // Only send model when SILRA_MODEL is explicitly configured.
+  if (MODEL) {
+    payload.model = MODEL;
+  }
+
+  const completion = await openai.chat.completions.create(
+    payload,
+    {
+      // Prevent Railway from hanging forever on upstream timeouts.
+      timeout: 30000
+    }
+  );
 
   const content = completion.choices?.[0]?.message?.content;
 
@@ -179,8 +201,10 @@ async function handleDepartmentMessage(message, department) {
   }
 }
 
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}`);
+  console.log(`Using Silra API baseURL: ${normalizedSilraBaseURL}`);
+  console.log(`Using model: ${MODEL || '(provider default)'}`);
 });
 
 client.on('messageCreate', async (message) => {
