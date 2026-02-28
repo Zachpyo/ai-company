@@ -5,6 +5,8 @@ import OpenAI from 'openai';
 const { DISCORD_TOKEN, SILRA_API_KEY } = process.env;
 const SILRA_BASE_URL = process.env.SILRA_BASE_URL || 'https://api.silra.cn/v1';
 const MODEL = process.env.SILRA_MODEL?.trim();
+const REQUEST_TIMEOUT_MS = Number(process.env.SILRA_TIMEOUT_MS || 90000);
+const MAX_RETRIES = Number(process.env.SILRA_MAX_RETRIES || 2);
 
 if (!DISCORD_TOKEN) {
   console.error('Missing DISCORD_TOKEN in environment variables.');
@@ -13,6 +15,12 @@ if (!DISCORD_TOKEN) {
 
 if (!SILRA_API_KEY) {
   console.error('Missing SILRA_API_KEY in environment variables.');
+  process.exit(1);
+}
+
+if (!MODEL) {
+  console.error('Missing SILRA_MODEL in environment variables.');
+  console.error('Your provider requires an explicit model name (for example: gpt-4o-mini).');
   process.exit(1);
 }
 
@@ -58,44 +66,74 @@ Give clear positioning, campaign ideas, channels, and KPIs for growth.`,
 Give budget implications, forecast assumptions, unit economics, and ROI-focused advice.`
 };
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableError(error) {
+  const msg = String(error?.message || '').toLowerCase();
+  return (
+    msg.includes('timed out') ||
+    msg.includes('timeout') ||
+    msg.includes('econnreset') ||
+    msg.includes('socket hang up') ||
+    error?.status === 408 ||
+    error?.status === 429 ||
+    (typeof error?.status === 'number' && error.status >= 500)
+  );
+}
+
 async function askAI(systemPrompt, userInput) {
   const payload = {
+    model: MODEL,
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userInput }
     ]
   };
 
-  // Some third-party OpenAI-compatible gateways use account-level default model.
-  // Only send model when SILRA_MODEL is explicitly configured.
-  if (MODEL) {
-    payload.model = MODEL;
-  }
+  let lastError;
 
-  const completion = await openai.chat.completions.create(
-    payload,
-    {
-      // Prevent Railway from hanging forever on upstream timeouts.
-      timeout: 30000
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    try {
+      const completion = await openai.chat.completions.create(
+        payload,
+        {
+          timeout: REQUEST_TIMEOUT_MS
+        }
+      );
+
+      const content = completion.choices?.[0]?.message?.content;
+
+      if (typeof content === 'string') {
+        return content.trim() || 'No response generated.';
+      }
+
+      if (Array.isArray(content)) {
+        const text = content
+          .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+          .join('\n')
+          .trim();
+
+        return text || 'No response generated.';
+      }
+
+      return 'No response generated.';
+    } catch (error) {
+      lastError = error;
+      if (attempt >= MAX_RETRIES || !isRetryableError(error)) {
+        throw error;
+      }
+
+      const delay = 1000 * (attempt + 1);
+      console.warn(
+        `AI request failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying in ${delay}ms: ${error.message}`
+      );
+      await sleep(delay);
     }
-  );
-
-  const content = completion.choices?.[0]?.message?.content;
-
-  if (typeof content === 'string') {
-    return content.trim() || 'No response generated.';
   }
 
-  if (Array.isArray(content)) {
-    const text = content
-      .map((part) => (typeof part?.text === 'string' ? part.text : ''))
-      .join('\n')
-      .trim();
-
-    return text || 'No response generated.';
-  }
-
-  return 'No response generated.';
+  throw lastError;
 }
 
 function splitMessage(text, maxLength = MAX_MESSAGE_LENGTH) {
@@ -205,6 +243,7 @@ client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Using Silra API baseURL: ${normalizedSilraBaseURL}`);
   console.log(`Using model: ${MODEL || '(provider default)'}`);
+  console.log(`AI timeout: ${REQUEST_TIMEOUT_MS}ms, retries: ${MAX_RETRIES}`);
 });
 
 client.on('messageCreate', async (message) => {
